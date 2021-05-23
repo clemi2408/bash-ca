@@ -1454,20 +1454,28 @@ read -d '' HTML_PAGE <<END
 <html>
 <head>
   <meta http-equiv="Content-Type" content="text/html; charset=utf-8"/>
-  <title>CA - $CA_NAME</title>
+  <title>$CA_NAME - Certificate authority</title>
  <!-- <LINK href="styles.css" rel="stylesheet" type="text/css"> -->
 </head>
 
 <body>
 
 <p>
-<h1>$CA_NAME</h1>
-<h2>Files</h2>
-
+<h1>Certificate authority</h1>
+<h2>$CA_NAME</h2>
+This is the Web Touchpoint of $CA_NAME Certificate authority
 </br>
+</br>
+<h3>Main Data</h3>
 <a href="$CA_PUBLIC_CERT">CA Certificate</a>
 </br>
 <a href="$CA_CRL">CA Certificate Revocation List</a>
+</br>
+</br>
+<h3>Data Browser</h3>
+<a href="ca/public/">Public CA data</a>
+</br>
+<a href="hosts/public/">Public Host data</a>
 </p>
 
 </body>
