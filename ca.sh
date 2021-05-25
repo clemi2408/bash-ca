@@ -31,11 +31,6 @@ declare -a CA_FOLDERS=("ca" "ca/database" "ca/database/certificates" "ca/config"
 #- .pem (Cert, CA Cert, Cert Chain, private Keys)
 #- .pvk (Windows)
 
-# revoke
-#Revoke a CertificatePermanent link for this heading
-#openssl ca -revoke newcerts/username.pem#
-
-#openssl ca -gencrl -out crl.pem
 
 
 readInput() {
@@ -364,6 +359,14 @@ printCmdInfo() {
 	echo "Host mode:"
 	echo -e "\t ./ca.sh host data_folder ca_fqdn CC ST L O OU Subject SANLine"
 	echo -e "\t ./ca.sh host '/Users/clemens/Desktop/ownca/data' 'ca.int.cleem.de' 'DE' 'BW' 'Bruchsal' 'cleem.de' 'int.cleem.de' 'DNS:host03.int.cleem.de,DNS:host03.cleem.de,IP:192.168.2.3'"
+	echo 
+	echo "Revoke host:"
+	echo -e "\t ./ca.sh revoke data_folder ca_fqdn host_fqdn"
+	echo -e "\t ./ca.sh revoke /Users/clemens/Desktop/ownca/data 'ca.int.cleem.de' 'host01.int.cleem.de'"
+
+
+
+
 	exit 1
 }
 
@@ -650,7 +653,7 @@ createCrlFile() {
 
 
 
-createDBFile() {
+createDbFile() {
 
 	local DB_FILE="$1"
 
@@ -674,7 +677,7 @@ createDBFile() {
 }
 
 
-generateCrlPemFile() {
+createCrlPemFile() {
 
 	local CA_SSL_CONFIG_FILE="$1"
 	local CA_CRL_FILE="$2"
@@ -716,7 +719,7 @@ generateCertSubjectLine() {
 	echo "$SUBJECT"
 }
 
-generateRootCaPrivateKey() {
+createRootCaPrivateKey() {
 	
 	local CA_PRIVATE_KEY_FILE="$1"
 	local PASSWORD="$2"
@@ -759,7 +762,7 @@ generateRootCaPrivateKey() {
 	fi
 }
 
-generatePublicKey() {
+createPublicKey() {
 
 	local PRIVATE_KEY_FILE="$1"
 	local PUBLIC_KEY_FILE="$2"
@@ -833,8 +836,8 @@ echo "$CONFIG_PART"
 
 reqBlock(){
 
-	local CA_KEY_BITS="$2"
-	local CA_HASH_ALGO="$3"
+	local CA_KEY_BITS="$1"
+	local CA_HASH_ALGO="$2"
 	
 read -d '' CONFIG_PART <<END
 ####### req
@@ -847,7 +850,8 @@ utf8                    = yes                   # Input is UTF-8
 string_mask             = utf8only              # Emit UTF-8 strings
 prompt                  = no                    # Don't prompt for DN
 distinguished_name      = ca_dn                 # DN section
-req_extensions          = ca_reqext             # Desired extensions
+req_extensions          = v3_req                # Desired extensions
+x509_extensions         = v3_ca
 
  #######
 
@@ -882,15 +886,30 @@ echo "$CONFIG_PART"
 }
 
 
-caRegExtBlock(){
+v3RegExtBlock(){
 
 read -d '' CONFIG_PART <<END
-####### ca_reqext
+####### v3_req
 
-[ ca_reqext ]
-keyUsage                = critical,keyCertSign,cRLSign
-basicConstraints        = critical,CA:false
+[ v3_req ]
+basicConstraints        = CA:TRUE
+keyUsage                = digitalSignature, nonRepudiation, keyEncipherment
+nsComment               = "CA certificate"
 subjectKeyIdentifier    = hash
+keyUsage                = critical, digitalSignature, keyAgreement
+
+####### v3_req_host
+
+[ v3_req_host ]
+basicConstraints        = critical,CA:true,pathlen:0
+keyUsage                = critical,keyCertSign,cRLSign
+extendedKeyUsage        = serverAuth
+subjectKeyIdentifier    = hash
+subjectAltName 			= @alt_names
+authorityInfoAccess     = @issuer_info
+crlDistributionPoints   = @crl_info
+nsComment               = "CA Host certificate"
+
 
  #######
 
@@ -899,6 +918,29 @@ END
 echo "$CONFIG_PART"
 
 }
+
+
+
+
+v3CaBlock(){
+
+read -d '' CONFIG_PART <<END
+####### v3_ca
+
+[ v3_ca ]
+subjectKeyIdentifier   = hash
+authorityKeyIdentifier = keyid:always,issuer:always
+issuerAltName          = issuer:copy
+
+ #######
+
+END
+
+echo "$CONFIG_PART"
+
+}
+
+
 
 generalCaBlock(){
 
@@ -946,8 +988,8 @@ email_in_dn             = no                    # Add email to cert DN
 preserve                = no                    # Keep passed DN ordering
 name_opt                = \$name_opt             # Subject DN display options
 cert_opt                = ca_default            # Certificate display options
-copy_extensions         = none                  # Copy extensions from CSR
-x509_extensions         = signing_ca_ext        # Default cert extensions
+copy_extensions         = copy                  # Copy extensions from CSR
+x509_extensions         = v3_ca        # Default cert extensions
 default_crl_days        = $DEFAULT_CRL_DAYS     # How long before next CRL
 crl_extensions          = crl_ext               # CRL extensions
 
@@ -959,15 +1001,10 @@ echo "$CONFIG_PART"
 
 }
 
-
-staticBlocks(){
+policyBlocks(){
 
 read -d '' CONFIG_PART <<END
-####### static
-[ v3_ca ]
-subjectKeyIdentifier=hash
-authorityKeyIdentifier=keyid:always,issuer
-basicConstraints = CA:true
+####### policies
 
 [ match_pol ]
 countryName             = match                 # Must match the Country
@@ -987,19 +1024,52 @@ organizationalUnitName  = optional
 commonName              = optional
 emailAddress            = optional
 
-[ root_ca_ext ]
+
+ #######
+
+END
+
+echo "$CONFIG_PART"
+
+
+}
+
+
+caProfileBlock(){
+
+	local SUBJECT="$1"
+
+read -d '' CONFIG_PART <<END
+####### static
+
+[ root_ca_profile ]
 keyUsage                = critical,keyCertSign,cRLSign
 basicConstraints        = critical,CA:true
 subjectKeyIdentifier    = hash
 authorityKeyIdentifier  = keyid:always
-
-[ signing_ca_ext ]
-keyUsage                = critical,keyCertSign,cRLSign
-basicConstraints        = critical,CA:true,pathlen:0
-subjectKeyIdentifier    = hash
-authorityKeyIdentifier  = keyid:always
+nsComment               = "Root CA certificate $SUBJECT"
+subjectAltName 			= @alt_names
 authorityInfoAccess     = @issuer_info
 crlDistributionPoints   = @crl_info
+
+
+#[ alt_names ]
+#DNS                     = $SUBJECT
+
+END
+
+echo "$CONFIG_PART"
+
+
+}
+
+
+
+
+staticBlocks(){
+
+read -d '' CONFIG_PART <<END
+####### static
 
 [ crl_ext ]
 authorityKeyIdentifier  = keyid:always
@@ -1049,30 +1119,43 @@ createOpenSslConfig (){
    	if ( [ ! -f "$CONFIG_FILE" ] || $FILE_OVERWRITE )  ; then
 
 
-				echo -e "INFO: \t\t CA Cert: <$P_CA_CERT_FILE>"
-				echo -e "INFO: \t\t CA Key: <$P_CA_KEY_FILE>"
-				echo -e "INFO: \t\t CA CRL: <$P_CA_CRL_FILE>"
-				echo -e "INFO: \t\t CA CRL DER: <$P_CA_CRL_DER_FILE>"
-				echo -e "INFO: \t\t CA Serial: <$P_CA_SERIAL_FILE>"
-				echo -e "INFO: \t\t CA Database: <$P_CA_INDEX_FILE>"
-				echo -e "INFO: \t\t CA Config File: <$CONFIG_FILE>"
+			echo -e "INFO: \t\t CA Cert: <$P_CA_CERT_FILE>"
+			echo -e "INFO: \t\t CA Key: <$P_CA_KEY_FILE>"
+			echo -e "INFO: \t\t CA CRL: <$P_CA_CRL_FILE>"
+			echo -e "INFO: \t\t CA CRL DER: <$P_CA_CRL_DER_FILE>"
+			echo -e "INFO: \t\t CA Serial: <$P_CA_SERIAL_FILE>"
+			echo -e "INFO: \t\t CA Database: <$P_CA_INDEX_FILE>"
+			echo -e "INFO: \t\t CA Config File: <$CONFIG_FILE>"
 
 
 			DEFAULT_BLOCK=$(defaultBlock "$CN" "$P_CA_CERT_FILE" "$P_CA_CRL_DER_FILE")
 			REQ_BLOCK=$(reqBlock "$CA_KEY_BITS" "$CA_HASH_ALGO")
 			CADN_BLOCK=$(caDnBlock "$C" "$O" "$OU" "$CN")
-			CAREGEXT_BLOCK=$(caRegExtBlock)
+			V3REGEXT_BLOCK=$(v3RegExtBlock)
+			V3CA_BLOCK=$(v3CaBlock)
 			GENERALCA_BLOCK=$(generalCaBlock)
-			ROOT_CA_BLOCK=$(rootCaBlock "$CN" "$P_CA_CERT_FILE" "$P_CA_KEY_FILE" "$P_CA_CRL_FILE" "$P_CA_SERIAL_FILE" "$P_CA_INDEX_FILE" "$CA_CERT_EXPIRE_DAYS" "$CA_CRL_DAYS" )
+			ROOT_CA_BLOCK=$(rootCaBlock "$CN" "$P_CA_CERT_FILE" "$P_CA_KEY_FILE" "$P_CA_CRL_FILE" "$P_CA_SERIAL_FILE" "$P_CA_INDEX_FILE" "$HOST_CERT_EXPIRE_DAYS" "$CA_CRL_DAYS" )
+			POLICIES_BLOCK=$(policyBlocks)
+
+		
+			CA_PROFILE_BLOCK=$(caProfileBlock "$CN")
+
 			STATIC_BLOCK=$(staticBlocks)
 
 			OUTPUT=""
 			OUTPUT+="$DEFAULT_BLOCK"
 			OUTPUT+="$REQ_BLOCK"
 			OUTPUT+="$CADN_BLOCK"
-			OUTPUT+="$CAREGEXT_BLOCK"
+			OUTPUT+="$V3REGEXT_BLOCK"
+			OUTPUT+="$V3CA_BLOCK"
 			OUTPUT+="$GENERALCA_BLOCK"
 			OUTPUT+="$ROOT_CA_BLOCK"
+			OUTPUT+="$POLICIES_BLOCK"
+			OUTPUT+="$CA_PROFILE_BLOCK"
+	
+
+
+
 			OUTPUT+="$STATIC_BLOCK"
 
 			echo -e "$OUTPUT" > $CONFIG_FILE
@@ -1097,7 +1180,7 @@ createOpenSslConfig (){
 	fi
 }
 
-generateRootCaCert() {
+createRootCaCert() {
 
 
 	local CA_SSL_CONFIG_FILE="$1"
@@ -1127,11 +1210,13 @@ generateRootCaCert() {
 			-batch \
 		    -in "$CA_CSR_FILE" \
 		    -out "$CA_CERT_FILE" \
-		    -extensions root_ca_ext \
+		    -extensions root_ca_profile \
 		    -config "$CA_SSL_CONFIG_FILE" \
 			-days "$CA_CERT_EXPIRE_DAYS" \
 			-subj "$CA_CSR_SUBJECT_LINE" \
-			-passin "pass:$PASSWORD"
+			-passin "pass:$PASSWORD" \
+		    -config <(cat "$CA_SSL_CONFIG_FILE" \
+       		<(printf "\n[alt_names]\n$SANBLOCK\n"))
 
 
 		if [ -f "$CA_CERT_FILE" ] ; then 
@@ -1180,27 +1265,26 @@ cleanUpDotOldFiles() {
 
 }
 
-generateCsr() {
+createCsr() {
 
-	local MODE="$1"
+
+	local REQ_EXTS="$1"
 	local CA_SSL_CONFIG_FILE="$2"
 	local KEY_FILE="$3"
 	local CSR_FILE="$4"	
 	local CSR_SUBJECT_LINE="$5"	
 	local CERT_EXPIRE_DAYS="$6"
-	local HASH_ALGO="$7"
-	local SAN_LINE="$8"
-	local PASSWORD="$9"
+	local SAN_LINE="$7"
+	local PASSWORD="$8"
 
 
-	echo -e "INFO: \t\t Mode: <$MODE>"
+
 	echo -e "INFO: \t\t SSL Config: <$CA_SSL_CONFIG_FILE>"
 	echo -e "INFO: \t\t Key: <$KEY_FILE>"
 	echo -e "INFO: \t\t CSR: <$CSR_FILE>"
 	echo -e "INFO: \t\t Subject: <$CSR_SUBJECT_LINE>"
 	echo -e "INFO: \t\t SAN: <$SAN_LINE>"
 	echo -e "INFO: \t\t Expire Days: <$CERT_EXPIRE_DAYS>"
-	echo -e "INFO: \t\t Hash Algo: <$HASH_ALGO>"
 
 
 	if ([ -f "$CA_CSR_FILE" ] && $FILE_BACKUP ) ; then 
@@ -1212,40 +1296,30 @@ generateCsr() {
 
 	if ([ -f "$KEY_FILE" ] && ([ ! -f "$CSR_FILE" ] || $FILE_OVERWRITE ))  ; then
 
+#					-config <(cat $CA_SSL_CONFIG_FILE \
+#					<(printf "\n[SAN]\nsubjectAltName=$SAN_LINE")) \
+#					-out "$CSR_FILE" 
+			
+			SAN_BLOCK=""
+			export IFS=","
+			INDEX=0
+			for SAN_LINE in $SAN_LINE; do
 
+				INDEX=$(($INDEX+1))
+				SAN_ENTRY="${SAN_LINE/\:/=}\n"
+				SANBLOCK+=$SAN_ENTRY
 
-		if [[ "$MODE" = "ca" ]]; then
+			done
 
-		openssl req -new -key "$KEY_FILE" \
-				-subj "$CSR_SUBJECT_LINE" \
-				-config "$CA_SSL_CONFIG_FILE" \
-				-out "$CSR_FILE" \
-				-days "$CERT_EXPIRE_DAYS" \
-				-"$HASH_ALGO" \
-				-passin "pass:$PASSWORD" 
-
-
-		elif [[ "$MODE" = "host" ]]; then
-
-
-
-			openssl req -new -"$HASH_ALGO" \
-			    -key "$KEY_FILE" \
-			    -subj "$CSR_SUBJECT_LINE" \
-			    -reqexts SAN \
-			    -config <(cat "$CA_SSL_CONFIG_FILE" \
-			        <(printf "\n[SAN]\nsubjectAltName=$SAN_LINE")) \
-			    -out "$CSR_FILE" \
-			    -passin "pass:$PASSWORD"
-
-
-		else
-
-			echo "ERROR: Invalid Mode <$MODE>"
-			exit 1
-
-		fi
-
+			openssl req -new -key "$KEY_FILE" \
+					-subj "$CSR_SUBJECT_LINE" \
+					-days "$CERT_EXPIRE_DAYS" \
+					-out "$CSR_FILE" \
+					-passin "pass:$PASSWORD" \
+					-reqexts "$REQ_EXTS" \
+		     		-config <(cat "$CA_SSL_CONFIG_FILE" \
+		       		<(printf "\n[alt_names]\n$SANBLOCK\n")) \
+           		    -out "$CSR_FILE" 
 
 
 		if [ -f "$CSR_FILE" ] ; then 
@@ -1269,20 +1343,24 @@ generateCsr() {
 
 signCsr() {
 
-	local CA_SSL_CONFIG_FILE="$1"
+	local CA_EXT="$1"
 
-	local SUBJECT="$2"
+	local CA_SSL_CONFIG_FILE="$2"
 
-	local CSR_FILE="$3"	
+	local SUBJECT="$3"
 
-	local CERT_FILE="$4"
+	local SAN_LINE="$4"
 
-	local PASSWORD="$5"
+	local CSR_FILE="$5"	
 
+	local CERT_FILE="$6"
+
+	local PASSWORD="$7"
 
 
 	echo -e "INFO: \t\t SSL Config: <$CA_SSL_CONFIG_FILE>"
 	echo -e "INFO: \t\t Subject: <$SUBJECT>"
+	echo -e "INFO: \t\t SAN Line: <$SAN_LINE>"
 	echo -e "INFO: \t\t CSR: <$CSR_FILE>"
 	echo -e "INFO: \t\t Cert: <$CERT_FILE>"
 
@@ -1302,17 +1380,28 @@ signCsr() {
 
    		else
 
-   			echo "$SUBJECT"
+   			SAN_BLOCK=""
+			export IFS=","
+			INDEX=0
+			for SAN_LINE in $SAN_LINE; do
+
+				INDEX=$(($INDEX+1))
+				SAN_ENTRY="${SAN_LINE/\:/=}\n"
+				SANBLOCK+=$SAN_ENTRY
+
+			done
+
 		   	openssl ca \
 		   	-batch \
-		    -config "$CA_SSL_CONFIG_FILE" \
+		    -out "$CSR_FILE" \
 		    -in "$CSR_FILE" \
 		    -out "$CERT_FILE" \
 		    -passin "pass:$PASSWORD" \
 		    -subj "$SUBJECT" \
-		    -extensions signing_ca_ext
-		   
-
+		    -extensions "$CA_EXT" \
+     		-config <(cat "$CA_SSL_CONFIG_FILE" \
+       		<(printf "\n[alt_names]\n$SANBLOCK\n"))
+         		   
 
 			if [ -f "$CERT_FILE" ] ; then 
 
@@ -1334,71 +1423,11 @@ signCsr() {
 	fi
 }
 
-signCsrSAN() {
 
-	local CA_SSL_CONFIG_FILE="$1"
-	local CSR_FILE="$2"	
-	local CERT_FILE="$3"
-	local PASSWORD="$4"
-	local SUBJECT_SAN_LINE="$5"
-	local SUBJECT="$6"
-	local HOST_CERT_EXPIRE_DAYS="$7"
-
-	echo -e "INFO: \t\t SSL Config: <$CA_SSL_CONFIG_FILE>"
-	echo -e "INFO: \t\t CSR: <$CSR_FILE>"
-	echo -e "INFO: \t\t Cert: <$CERT_FILE>"
-	echo -e "INFO: \t\t SAN Line: <$SUBJECT_SAN_LINE>"
-
-	if ([ -f "$CERT_FILE" ] && $FILE_BACKUP ) ; then 
-
-		doBackup "$CERT_FILE"
-    	
-   	fi
-
-   	if ([ ! -f "$CERT_FILE" ] || $FILE_OVERWRITE ) ; then
-
-   		if ([ -f "$CSR_FILE" ] && [ -f "$CA_SSL_CONFIG_FILE" ]  ) ; then
- \
-   			openssl ca \
-		   	-batch \
-		    -config "$CA_SSL_CONFIG_FILE" \
-		    -subj "$SUBJECT" \
-		    -in "$CSR_FILE" \
-		    -out "$CERT_FILE" \
-		    -passin "pass:$PASSWORD" \
-		    -days "$HOST_CERT_EXPIRE_DAYS" \
-		 	-extensions v3_ca \
-		 	-extfile <(echo "[v3_ca]"; echo "basicConstraints = CA:FALSE"; echo "extendedKeyUsage=serverAuth, clientAuth, emailProtection"; echo "keyUsage = nonRepudiation, digitalSignature, keyEncipherment" ; echo "subjectAltName=$SUBJECT_SAN_LINE") \
-
-
-			if [ -f "$CERT_FILE" ] ; then 
-
-				echo "INFO: Created cert <$CERT_FILE>"
-				showCert "$CERT_FILE"
-
-			else
-
-				echo "ERROR: Creating cert <$CERT_FILE>"
-				exit 1
-	    	
-	   		fi
-
-
-		else
-
-			echo "ERROR: Input precondition not met"
-
-		fi
-	else
-
-		echo "ERROR: Can not create cert $CERT_FILE"
-
-	fi
-}
 
 ##### Host Related
 
-generateHostPrivateKey() {
+createHostPrivateKey() {
 	
 	local HOST_PRIVATE_KEY_FILE="$1"
 	local PASSWORD="$2"
@@ -1507,6 +1536,8 @@ END
 
 ##### Mode related
 
+##################################################### 
+
 createCA() {
 
 	local ROOT_FOLDER="$1"
@@ -1577,7 +1608,7 @@ createCA() {
 		createCrlFile "$CA_CRL_FILE_TXT"
 
 		echo -e "\nINFO: Creating CA database file <$CA_DATABASE_FILE>"
-		createDBFile "$CA_DATABASE_FILE"
+		createDbFile "$CA_DATABASE_FILE"
 
 		# ASKING FOR USER INPUT OF PASSWORDS
 		echo -e "\nINFO: Setting RSA Key passwords"
@@ -1585,7 +1616,7 @@ createCA() {
 
 		# CREATING CA PRIVATE KEY IN PEM FORMAT
 		echo -e "\nINFO: Creating CA private key PEM <$CA_PRIVATE_KEY_FILE_PEM>"
-		generateRootCaPrivateKey "$CA_PRIVATE_KEY_FILE_PEM" "$ROOT_KEY_PASSWORD"
+		createRootCaPrivateKey "$CA_PRIVATE_KEY_FILE_PEM" "$ROOT_KEY_PASSWORD"
 
 		# CREATING CA PRIVATE KEY IN DER FORMAT
 		echo -e "\nINFO: Creating CA private key DER <$CA_PRIVATE_KEY_FILE_DER>"
@@ -1593,7 +1624,7 @@ createCA() {
 
 		# CREATING CA PUBLIC KEY IN PEM FORMAT
 		echo -e "\nINFO: Creating CA public key PEM <$CA_PUBLIC_KEY_FILE_PEM>"
-		generatePublicKey "$CA_PRIVATE_KEY_FILE_PEM" "$CA_PUBLIC_KEY_FILE_PEM" "$ROOT_KEY_PASSWORD"
+		createPublicKey "$CA_PRIVATE_KEY_FILE_PEM" "$CA_PUBLIC_KEY_FILE_PEM" "$ROOT_KEY_PASSWORD"
 		
 		# CREATING CA PUBLIC KEY IN DER FORMAT
 		echo -e "\nINFO: Creating CA public key DER <$CA_PUBLIC_KEY_FILE_DER>"
@@ -1602,14 +1633,12 @@ createCA() {
 		echo -e "\nINFO: Creating CA OpenSSL config File <$CA_SSL_CONFIG_FILE>"
 		createOpenSslConfig "$CA_SSL_CONFIG_FILE" "$CC" "$O" "$OU" "$CN"
 
-
 		echo -e "\nINFO: Creating CA CSR <$CA_CERT_CSR_FILE>"
-		generateCsr "ca" "$CA_SSL_CONFIG_FILE" "$CA_PRIVATE_KEY_FILE_PEM" "$CA_CERT_CSR_FILE" "$CA_CERT_SUBJECT_LINE" "$CA_CERT_EXPIRE_DAYS" "$CA_HASH_ALGO" "$CA_SAN_LINE" "$ROOT_KEY_PASSWORD"
-
+		createCsr "v3_req" "$CA_SSL_CONFIG_FILE" "$CA_PRIVATE_KEY_FILE_PEM" "$CA_CERT_CSR_FILE" "$CA_CERT_SUBJECT_LINE" "$CA_CERT_EXPIRE_DAYS" "$CA_SAN_LINE" "$ROOT_KEY_PASSWORD"
 
 		# CREATING CA CERT IN PEM FORMAT
 		echo -e "\nINFO: Creating CA root cert PEM <$CA_CERT_FILE_PEM>"
-		generateRootCaCert "$CA_SSL_CONFIG_FILE" "$CA_CERT_CSR_FILE" "$CA_CERT_FILE_PEM" "$CA_CERT_SUBJECT_LINE" "$ROOT_KEY_PASSWORD"
+		createRootCaCert "$CA_SSL_CONFIG_FILE" "$CA_CERT_CSR_FILE" "$CA_CERT_FILE_PEM" "$CA_CERT_SUBJECT_LINE" "$ROOT_KEY_PASSWORD"
 		cleanUpDotOldFiles "$CA_DATABASE_FILE"
 	
 		# CREATING CA CERT IN DER FORMAT
@@ -1617,7 +1646,7 @@ createCA() {
 		convertCertToDer "$CA_CERT_FILE_PEM" "$CA_CERT_FILE_DER"
 
 		echo -e "\nINFO: Creating CA Certificate revocation file PEM <$CA_CRL_FILE_PEM>"
-		generateCrlPemFile "$CA_SSL_CONFIG_FILE" "$CA_CRL_FILE_PEM" "$ROOT_KEY_PASSWORD"
+		createCrlPemFile "$CA_SSL_CONFIG_FILE" "$CA_CRL_FILE_PEM" "$ROOT_KEY_PASSWORD"
 		cleanUpDotOldFiles "$CA_CRL_FILE_TXT"
 
 		echo -e "\nINFO: Creating CA Certificate revocation file DER <$CA_CRL_FILE_DER>"
@@ -1639,6 +1668,8 @@ createCA() {
 	fi
 }
 
+##################################################### 
+
 createHost() {
 
 	local ROOT_FOLDER="$1"
@@ -1650,7 +1681,7 @@ createHost() {
 	local OU="$6"
 	local P_SUBJECT="$7"
 	local CA=$8
-	local SAN_CONTENT="$9" 
+	local HOST_CERT_SAN_CONTENT="$9" 
 
 	local CA_FOLDER=$(getCaFolder "$ROOT_FOLDER" "$CA")
 
@@ -1665,7 +1696,7 @@ createHost() {
 	echo -e "INFO: \t\t Organisation unit: <$OU>"
 	echo -e "INFO: \t\t Subject: <$P_SUBJECT>"
 	echo -e "INFO: \t\t CA: <$CA>"
-	echo -e "INFO: \t\t SAN Line: <$SAN_CONTENT>"
+	echo -e "INFO: \t\t SAN Line: <$HOST_CERT_SAN_CONTENT>"
 
 
 	### CA Specific files needed to sign
@@ -1687,9 +1718,6 @@ createHost() {
 	local HOST_CERT_FILE_PEM=$(getFilePath "$ROOT_FOLDER" "$CA" "$P_SUBJECT" "hosts" "public" "cert" "PEM")
 	local HOST_CERT_FILE_DER=$(getFilePath "$ROOT_FOLDER" "$CA" "$P_SUBJECT" "hosts" "public" "cert" "DER")
 
-	local HOST_SAN_CERT_FILE_PEM=$(getFilePath "$ROOT_FOLDER" "$CA" "$P_SUBJECT" "hosts" "public" "sancert" "PEM")
-	local HOST_SAN_CERT_FILE_DER=$(getFilePath "$ROOT_FOLDER" "$CA" "$P_SUBJECT" "hosts" "public" "sancert" "DER")
-
 
 	##### FLOW 
 	echo -e "\nINFO: Checking CA Folders in <$CA_FOLDER>"
@@ -1705,75 +1733,132 @@ createHost() {
 
 
 	echo -e "\nINFO: Creating Host key PEM <$HOST_PRIVATE_KEY_FILE_PEM>"
-	generateHostPrivateKey "$HOST_PRIVATE_KEY_FILE_PEM" "$HOST_KEY_PASSWORD"
+	createHostPrivateKey "$HOST_PRIVATE_KEY_FILE_PEM" "$HOST_KEY_PASSWORD"
 
 	echo -e "\nINFO: Creating Host key DER <$HOST_PRIVATE_KEY_FILE_DER>"
 	convertKeyToDer "$HOST_PRIVATE_KEY_FILE_PEM" "$HOST_PRIVATE_KEY_FILE_DER" "$HOST_KEY_PASSWORD"
 
 	echo -e "\nINFO: Creating Host public key PEM <$HOST_PUBLIC_KEY_FILE_PEM>"
-	generatePublicKey "$HOST_PRIVATE_KEY_FILE_PEM" "$HOST_PUBLIC_KEY_FILE_PEM" "$HOST_KEY_PASSWORD"
+	createPublicKey "$HOST_PRIVATE_KEY_FILE_PEM" "$HOST_PUBLIC_KEY_FILE_PEM" "$HOST_KEY_PASSWORD"
 
 	echo -e "\nINFO: Creating Host public key DER <$HOST_PUBLIC_KEY_FILE_DER>"
 	convertKeyToDer "$HOST_PUBLIC_KEY_FILE_PEM" "$HOST_PUBLIC_KEY_FILE_DER"
 
 	echo -e "\nINFO: Creating CSR <$HOST_KEY_CSR_FILE> for key <$HOST_PRIVATE_KEY_FILE_PEM>"
-	generateCsr "host" "$CA_SSL_CONFIG_FILE" "$HOST_PRIVATE_KEY_FILE_PEM" "$HOST_KEY_CSR_FILE" "$HOST_CERT_SUBJECT_LINE" "$HOST_CERT_EXPIRE_DAYS" "$HOST_HASH_ALGO" "$SAN_CONTENT" "$PRIVATE_KEY_PASSWORD" 
+	createCsr "v3_req_host" "$CA_SSL_CONFIG_FILE" "$HOST_PRIVATE_KEY_FILE_PEM" "$HOST_KEY_CSR_FILE" "$HOST_CERT_SUBJECT_LINE" "$HOST_CERT_EXPIRE_DAYS" "$HOST_CERT_SAN_CONTENT" "$PRIVATE_KEY_PASSWORD" 
 	showCsr "$HOST_KEY_CSR_FILE"
 
-
 	echo -e "\nINFO: Creating PEM Host cert <$HOST_CERT_FILE_PEM> via <$HOST_KEY_CSR_FILE>"
-	signCsr "$CA_SSL_CONFIG_FILE" "$HOST_CERT_SUBJECT_LINE" "$HOST_KEY_CSR_FILE" "$HOST_CERT_FILE_PEM" "$PRIVATE_KEY_PASSWORD"
-
+	signCsr "v3_req_host" "$CA_SSL_CONFIG_FILE" "$HOST_CERT_SUBJECT_LINE" "$HOST_CERT_SAN_CONTENT" "$HOST_KEY_CSR_FILE" "$HOST_CERT_FILE_PEM" "$PRIVATE_KEY_PASSWORD"
 	cleanUpDotOldFiles "$CA_DATABASE_FILE"
-	echo -e "\nINFO: Creating Host cert DER <$HOST_CERT_FILE_DER>"
+
+	echo -e "\nINFO: Creating Host cert DER <$CA_CERT_FILE_DER>"
 	convertCertToDer "$HOST_CERT_FILE_PEM" "$HOST_CERT_FILE_DER"
-	
-	
-	echo -e "\nINFO: Creating PEM Host SAN cert <$HOST_SAN_CERT_FILE_PEM> with content <$SAN_CONTENT>"
-	signCsrSAN "$CA_SSL_CONFIG_FILE" "$HOST_KEY_CSR_FILE" "$HOST_SAN_CERT_FILE_PEM" "$PRIVATE_KEY_PASSWORD" "$SAN_CONTENT" "$HOST_CERT_SUBJECT_LINE" "$HOST_CERT_EXPIRE_DAYS"
 
-	cleanUpDotOldFiles "$CA_DATABASE_FILE"
-
-echo "########"
-
-	echo -e "\nINFO: Creating Host SAN cert DER <$HOST_SAN_CERT_FILE_DER>"
-	convertCertToDer "$HOST_SAN_CERT_FILE_PEM" "$HOST_SAN_CERT_FILE_DER"
-
-exit 1
 
 
 	ROOT_KEY_PASSWORD=""
 	SIGNING_KEY_PASSWORD=""
+
 }
 
+##################################################### 
+
+revokeCertificate(){
+
+	local ROOT_FOLDER="$1"
+	local CA_FQDN="$2"
+	local CN="$3"
+
+	echo -e "INFO: \t\t Folder: <$ROOT_FOLDER>"
+	echo -e "INFO: \t\t CA: <$CA_FQDN>"
+	echo -e "INFO: \t\t Subject: <$CN>"
+
+
+	local CA_CRL_FILE_PEM=$(getFilePath "$ROOT_FOLDER" "$CA_FQDN" "$CA_FQDN" "ca" "public" "crl" "PEM") 
+	local CA_CRL_FILE_DER=$(getFilePath "$ROOT_FOLDER" "$CA_FQDN" "$CA_FQDN" "ca" "public" "crl" "DER") 
+	local CA_CRL_FILE_TXT=$(getFilePath "$ROOT_FOLDER" "$CA_FQDN" "$CA_FQDN" "ca" "private" "crl" "TXT") 
+	local CA_SSL_CONFIG_FILE=$(getFilePath "$ROOT_FOLDER" "$CA_FQDN" "$CA_FQDN" "ca" "config" "sslconfig" "SSLCONFIG") 
+
+	local CA_PRIVATE_KEY_FILE_PEM=$(getFilePath "$ROOT_FOLDER" "$CN" "$CN" "ca" "private" "key" "PEM") 
+	
+	local HOST_CERT_FILE_PEM=$(getFilePath "$ROOT_FOLDER" "$CA_FQDN" "$CN" "hosts" "public" "cert" "PEM")
+
+	echo -e "INFO: \t\t CA PEM CRL: <$CA_CRL_FILE_PEM>"
+	echo -e "INFO: \t\t CA DER CRL: <$CA_CRL_FILE_DER>"
+	echo -e "INFO: \t\t CA SSL Config: <$CA_SSL_CONFIG_FILE>"
+	echo -e "INFO: \t\t CA Key: <$CA_PRIVATE_KEY_FILE_PEM>"
+	echo -e "INFO: \t\t Cert to revoke: <$HOST_CERT_FILE_PEM>"
+
+	# ASKING FOR USER INPUT OF PASSWORDS
+	echo -e "\nINFO: Enter RSA Key password:"
+	local ROOT_KEY_PASSWORD=$(readPasswordInput "CA private key password")
+
+
+	openssl ca -config "$CA_SSL_CONFIG_FILE" -revoke "$HOST_CERT_FILE_PEM" -passin "pass:$ROOT_KEY_PASSWORD"
+
+
+	echo -e "\nINFO: Updating CA Certificate revocation file PEM <$CA_CRL_FILE_PEM>"
+	createCrlPemFile "$CA_SSL_CONFIG_FILE" "$CA_CRL_FILE_PEM" "$ROOT_KEY_PASSWORD"
+	cleanUpDotOldFiles "$CA_CRL_FILE_TXT"
+
+	echo -e "\nINFO: Updating CA Certificate revocation file DER <$CA_CRL_FILE_DER>"
+	convertCrlToDer "$CA_CRL_FILE_PEM" "$CA_CRL_FILE_DER" 
+
+
+}
 
 
 ##################################################### START
 
 ##### ARGS 
-P_MODE="$1"
-P_DATA_FOLDER="$2"
-P_CA_FQDN="$3"
-P_CC="$4"
-P_ST="$5"
-P_L="$6"
-P_O="$7"
-P_OU="$8"
-P_SAN="$9"
+
 
 ##### Script flow
 
-P_SUBJECT=$(extractSubjectFromSan "$P_SAN")
+P_MODE="$1"
 
 if ([[ "$P_MODE" = "ca" ]] && [[ "$#" = 8 ]]); then
 
+
+	P_ROOT_FOLDER="$2"
+	P_CA_FQDN="$3"
+	P_CC="$4"
+	P_ST="$5"
+	P_L="$6"
+	P_O="$7"
+	P_OU="$8"
+
 	# CREATE A CA
-	createCA "$P_DATA_FOLDER" "$P_CC" "$P_ST" "$P_L" "$P_O" "$P_OU" "$P_CA_FQDN" 
+	createCA "$P_ROOT_FOLDER" "$P_CC" "$P_ST" "$P_L" "$P_O" "$P_OU" "$P_CA_FQDN" 
 
 elif ([[ "$P_MODE" = "host" ]] && [[ "$#" = 9 ]]); then
 
+	P_ROOT_FOLDER="$2"
+	P_CA_FQDN="$3"
+	P_CC="$4"
+	P_ST="$5"
+	P_L="$6"
+	P_O="$7"
+	P_OU="$8"
+	P_SAN="$9"
+
+	P_SUBJECT=$(extractSubjectFromSan "$P_SAN")
+
 	# CREATE A HOST
-	createHost "$P_DATA_FOLDER" "$P_CC" "$P_ST" "$P_L" "$P_O" "$P_OU" "$P_SUBJECT" "$P_CA_FQDN" "$P_SAN"
+	createHost "$P_ROOT_FOLDER" "$P_CC" "$P_ST" "$P_L" "$P_O" "$P_OU" "$P_SUBJECT" "$P_CA_FQDN" "$P_SAN"
+
+
+elif ([[ "$P_MODE" = "revoke" ]] && [[ "$#" = 4 ]]); then
+
+	# REVOKE A CERT
+
+	P_ROOT_FOLDER="$2"
+	P_CA_FQDN="$3"
+	P_CN="$4"
+
+	# REVOKE A CERTIFICATE
+	revokeCertificate "$P_ROOT_FOLDER" "$P_CA_FQDN" "$P_CN"
 
 else
 
