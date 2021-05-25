@@ -1444,10 +1444,14 @@ createHostPrivateKey() {
 
 	if ([ ! -f "$HOST_PRIVATE_KEY_FILE" ] || $FILE_OVERWRITE ) ; then
 
-		openssl genrsa \
-				-out "$HOST_PRIVATE_KEY_FILE" \
-				"$HOST_KEY_BITS" \
-				-pass stdin <<<"$PASSWORD"
+
+		openssl genrsa  -out "$HOST_PRIVATE_KEY_FILE" -passout "pass:$PASSWORD"
+
+
+#		openssl genrsa \
+#				-out "$HOST_PRIVATE_KEY_FILE" \
+#				"$HOST_KEY_BITS" \
+#				-pass stdin <<<"$PASSWORD"
 
 		if [ -f "$HOST_PRIVATE_KEY_FILE" ] ; then 
 
@@ -1752,7 +1756,7 @@ createHost() {
 	signCsr "v3_req_host" "$CA_SSL_CONFIG_FILE" "$HOST_CERT_SUBJECT_LINE" "$HOST_CERT_SAN_CONTENT" "$HOST_KEY_CSR_FILE" "$HOST_CERT_FILE_PEM" "$PRIVATE_KEY_PASSWORD"
 	cleanUpDotOldFiles "$CA_DATABASE_FILE"
 
-	echo -e "\nINFO: Creating Host cert DER <$CA_CERT_FILE_DER>"
+	echo -e "\nINFO: Creating Host cert DER <$HOST_CERT_FILE_DER>"
 	convertCertToDer "$HOST_CERT_FILE_PEM" "$HOST_CERT_FILE_DER"
 
 
@@ -1867,3 +1871,5 @@ else
 	printCmdInfo
 
 fi 
+
+
