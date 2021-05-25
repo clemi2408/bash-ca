@@ -166,7 +166,7 @@ getFilePath() {
 	local CN="$3"
 	local TARGET="$4" # CA | HOST
 	local VISIBILITY="$5" # public | private
-	local FILE_TYPE="$6" # PRIVKEY | PUBKEY | CERT | SIGNKEY | SIGNCSR | SIGNCERT
+	local FILE_TYPE="$6" # PRIVKEY | PUBKEY | CERT | SIGNKEY | SIGNCSR | SIGNCERT | keycert
 	local FORMAT="$7" # PEM | DER
 
 	local CA_FOLDER=$(getCaFolder "$ROOT_FOLDER" "$CA")
@@ -210,6 +210,7 @@ getSubfolderPath() {
 	local SSLCONF_EXT=""
 	local CRL_EXT=""
 	local HTML_EXT=""
+	local KEY_CERT_EXT=""
 
 	if [ "$FORMAT" = "PEM" ]; then
 
@@ -218,6 +219,7 @@ getSubfolderPath() {
 		CSR_EXT="csr"
 		CSR_EXT="csr"
 		CRL_EXT="pem.crl"
+		KEY_CERT_EXT="pem"
 
 	elif [ "$FORMAT" = "TXT" ]; then
 
@@ -263,6 +265,10 @@ getSubfolderPath() {
     elif [ "$FILE_TYPE" = "key" ]; then
 
     	FILE_NAME=$(getFileName $TARGET_FILE_PREFIX $KEY_EXT $VISIBILITY )
+ 
+    elif [ "$FILE_TYPE" = "keycert" ]; then
+
+    	FILE_NAME=$(getFileName $TARGET_FILE_PREFIX $KEY_CERT_EXT "keycert" )
  
     elif [ "$FILE_TYPE" = "database" ]; then
 
@@ -449,7 +455,7 @@ showPrivateKey() {
 
 	if [ -f "$PRIVATE_KEY_FILE" ] ; then 
 
-		openssl rsa -in "$PRIVATE_KEY_FILE" -check
+		openssl rsa -in "$PRIVATE_KEY_FILE"
 
 	else
 
@@ -458,6 +464,34 @@ showPrivateKey() {
 
    	fi
 }
+
+
+combineCertWithPrivateKey(){
+
+	local PRIVATE_KEY_FILE="$1"
+	local CERTIFICATE_FILE="$2"
+	local COMBINED_FILE="$3"
+	local PASSWORD="$4"
+
+		echo -e "INFO:\t\t Private Key: <$PRIVATE_KEY_FILE>"
+	echo -e "INFO:\t\t Certificate File: <$CERTIFICATE_FILE>"
+	echo -e "INFO:\t\t Combined File: <$COMBINED_FILE>"
+
+
+
+	if ([ -f "$PRIVATE_KEY_FILE" ] && [ -f "$PRIVATE_KEY_FILE" ]  && ([ ! -f "$COMBINED_FILE" ] || $FILE_OVERWRITE)) ; then 
+
+		openssl rsa -in "$PRIVATE_KEY_FILE" -passin "pass:$PASSWORD" > "$COMBINED_FILE" 2>/dev/null
+		openssl x509 -in "$CERTIFICATE_FILE" >> "$COMBINED_FILE"
+
+	else
+
+		echo "ERROR: Creating combined KeyCertFile <$COMBINED_FILE>"
+
+	fi
+
+}
+
 
 convertKeyToDer() {
 
@@ -1401,12 +1435,13 @@ signCsr() {
 		    -extensions "$CA_EXT" \
      		-config <(cat "$CA_SSL_CONFIG_FILE" \
        		<(printf "\n[alt_names]\n$SANBLOCK\n"))
+
          		   
 
 			if [ -f "$CERT_FILE" ] ; then 
 
 				echo "INFO: Created cert <$CERT_FILE>"
-				showCert "$CERT_FILE"
+			#	showCert "$CERT_FILE"
 
 			else
 
@@ -1722,6 +1757,8 @@ createHost() {
 	local HOST_CERT_FILE_PEM=$(getFilePath "$ROOT_FOLDER" "$CA" "$P_SUBJECT" "hosts" "public" "cert" "PEM")
 	local HOST_CERT_FILE_DER=$(getFilePath "$ROOT_FOLDER" "$CA" "$P_SUBJECT" "hosts" "public" "cert" "DER")
 
+	local HOST_COMBINED_KEY_CERT_FILE=$(getFilePath "$ROOT_FOLDER" "$CA" "$P_SUBJECT" "hosts" "private" "keycert" "PEM")
+
 
 	##### FLOW 
 	echo -e "\nINFO: Checking CA Folders in <$CA_FOLDER>"
@@ -1758,6 +1795,10 @@ createHost() {
 
 	echo -e "\nINFO: Creating Host cert DER <$HOST_CERT_FILE_DER>"
 	convertCertToDer "$HOST_CERT_FILE_PEM" "$HOST_CERT_FILE_DER"
+
+	echo -e "\nINFO: Creating Host combined Private Key Cert File PEM <$HOST_CERT_FILE_DER>"
+	combineCertWithPrivateKey "$HOST_PRIVATE_KEY_FILE_PEM" "$HOST_CERT_FILE_PEM" "$HOST_COMBINED_KEY_CERT_FILE" "$PRIVATE_KEY_PASSWORD"
+
 
 
 
