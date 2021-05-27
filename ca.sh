@@ -1449,17 +1449,36 @@ createCsr() {
    	fi
 
 	if ([ -f "$KEY_FILE" ] && ([ ! -f "$CSR_FILE" ] || $FILE_OVERWRITE ))  ; then
+
+			INDEX=0
+			RAW_VALUE=""
 	
 			SAN_BLOCK=""
 			export IFS=","
-			INDEX=0
 
-			for SAN_LINE in $SAN_LINE; do
+			for SAN_ENTRY in $SAN_LINE; do
 
 				INDEX=$(($INDEX+1))
-				SAN_ENTRY="${SAN_LINE/\:/=}\n"
-				SANBLOCK+=$SAN_ENTRY
 
+
+				if [[ "$SAN_ENTRY" =~ IP:* ]] ; then
+
+					RAW_VALUE="${SAN_ENTRY/IP\:/}\n"
+
+					SANBLOCK+="IP.$INDEX = $RAW_VALUE"
+
+				elif [[ "$SAN_ENTRY" =~ DNS:* ]]; then
+
+					RAW_VALUE="${SAN_ENTRY/DNS\:/}\n"
+
+					SANBLOCK+="DNS.$INDEX = $RAW_VALUE"
+
+				else 
+
+					continue
+
+				fi
+				
 			done
 
 			openssl req -new -key "$KEY_FILE" \
@@ -1956,3 +1975,5 @@ else
 	printCmdInfo
 
 fi 
+
+
