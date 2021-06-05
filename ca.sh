@@ -19,20 +19,6 @@ MAX_PASSWORD_LENGTH=100
 declare -a CA_FOLDERS=("ca" "ca/database" "ca/database/certs" "ca/config" "ca/wwwroot" "ca/public" "ca/private"  "hosts" "hosts/public" "hosts/private")
 #######
 
-#certificates
-# - .spc (Windows)
-
-#private key
-#- .pvk (Windows)
-
-#Containers
-#- .p7b .p7c (PKCS#12 B64: Cert, CA Cert, Cert Chain)
-#- .pfx, .p12 (PKCS#12 B64: Cert, CA Cert, Cert Chain, private Keys)
-#- .pem (Cert, CA Cert, Cert Chain, private Keys)
-#- .pvk (Windows)
-
-
-
 readInput() {
 
 	local HINT="$1"
@@ -168,8 +154,8 @@ getFilePath() {
 	local CN="$3"
 	local TARGET="$4" # CA | HOST
 	local VISIBILITY="$5" # public | private
-	local FILE_TYPE="$6" # PRIVKEY | PUBKEY | CERT | SIGNKEY | SIGNCSR | SIGNCERT | keycert
-	local FORMAT="$7" # PEM | DER
+	local FILE_TYPE="$6" # PRIVKEY | PUBKEY | CERT | SIGNKEY | SIGNCSR | SIGNCERT | keycert ...
+	local FORMAT="$7" # PEM | DER ...
 
 	local CA_FOLDER=$(getCaFolder "$ROOT_FOLDER" "$CA")
 
@@ -215,6 +201,8 @@ getSubfolderPath() {
 	local HTML_EXT=""
 	local KEY_CERT_EXT=""
 	local RND_FILE_EXT=""
+	local PFX_FILE_EXT=""
+	local P7B_FILE_EXT=""
 
 	if [ "$FORMAT" = "PEM" ]; then
 
@@ -224,6 +212,14 @@ getSubfolderPath() {
 		CSR_EXT="csr"
 		CRL_EXT="pem.crl"
 		KEY_CERT_EXT="pem"
+
+	elif [ "$FORMAT" = "P7B" ]; then
+
+		P7B_FILE_EXT="p7b"
+
+	elif [ "$FORMAT" = "PFX" ]; then
+
+		PFX_FILE_EXT="p12"
 
 	elif [ "$FORMAT" = "TXT" ]; then
 
@@ -282,6 +278,18 @@ getSubfolderPath() {
 
     	FILE_NAME=$(getFileName $TARGET_FILE_PREFIX $KEY_CERT_EXT "keycert" )
  
+     elif [ "$FILE_TYPE" = "certkey" ]; then
+
+    	FILE_NAME=$(getFileName $TARGET_FILE_PREFIX $KEY_CERT_EXT "certkey" )
+
+     elif [ "$FILE_TYPE" = "pfx" ]; then
+
+    	FILE_NAME=$(getFileName $TARGET_FILE_PREFIX $PFX_FILE_EXT )
+
+     elif [ "$FILE_TYPE" = "p7b" ]; then
+
+    	FILE_NAME=$(getFileName $TARGET_FILE_PREFIX $P7B_FILE_EXT )
+
     elif [ "$FILE_TYPE" = "database" ]; then
 
     	FILE_NAME=$(getFileName $TARGET_FILE_PREFIX $DB_EXT )
@@ -534,10 +542,12 @@ displayResult(){
 
 combineCertWithPrivateKey(){
 
-	local PRIVATE_KEY_FILE="$1"
-	local CERTIFICATE_FILE="$2"
-	local COMBINED_FILE="$3"
-	local PASSWORD="$4"
+	local ORDER="$1"
+
+	local PRIVATE_KEY_FILE="$2"
+	local CERTIFICATE_FILE="$3"
+	local COMBINED_FILE="$4"
+	local PASSWORD="$5"
 
 	echo -e "INFO:\t\tPrivate Key: <$PRIVATE_KEY_FILE>"
 	echo -e "INFO:\t\tCertificate File: <$CERTIFICATE_FILE>"
@@ -547,22 +557,144 @@ combineCertWithPrivateKey(){
 
 	if ([ -f "$PRIVATE_KEY_FILE" ] && [ -f "$PRIVATE_KEY_FILE" ]  && ([ ! -f "$COMBINED_FILE" ] || $FILE_OVERWRITE)) ; then 
 
-		openssl rsa -in "$PRIVATE_KEY_FILE" -passin "pass:$PASSWORD" > "$COMBINED_FILE" &>/dev/null
-		openssl x509 -in "$CERTIFICATE_FILE" >> "$COMBINED_FILE"
 
+		if [[ "$ORDER" = "keyfirst" ]] ; then
+
+			openssl rsa -in "$PRIVATE_KEY_FILE" -passin "pass:$PASSWORD" > "$COMBINED_FILE"
+			openssl x509 -in "$CERTIFICATE_FILE" >> "$COMBINED_FILE"
+
+		elif [[ "$ORDER" = "certfirst" ]] ; then
+
+			openssl x509 -in "$CERTIFICATE_FILE" > "$COMBINED_FILE"
+			openssl rsa -in "$PRIVATE_KEY_FILE" -passin "pass:$PASSWORD" >> "$COMBINED_FILE"
+			
+		fi
 
 		if [ ! -f "$COMBINED_FILE" ] ; then
 
-			echo "ERROR: Creating combined KeyCertFile <$COMBINED_FILE>"
+			echo "ERROR: Creating combined $ORDER File <$COMBINED_FILE>"
 			exit 1
 
 	   	fi
 
 	else
 
-		echo "ERROR: Creating combined KeyCertFile <$COMBINED_FILE>"
+		echo "ERROR: Creating combined $ORDER File <$COMBINED_FILE>"
 		exit 1
 
+	fi
+
+}
+
+
+
+convertKeyCertToPkcs12 () {
+
+	local KEY_FILE="$1"
+	local CERT_FILE="$2"
+	local PFX_FILE="$3"
+	local PASSWORD="$4"
+
+	echo -e "INFO:\t\tKey: <$KEY_FILE>"
+	echo -e "INFO:\t\tCert: <$CERT_FILE>"
+	echo -e "INFO:\t\tPFX: <$PFX_FILE>"
+
+	if ([ -f "$PFX_FILE" ] && $FILE_BACKUP ) ; then 
+
+		doBackup "$PFX_FILE"
+    	
+   	fi
+
+
+   	if ([ -f "$KEY_FILE" ] && [ -f "$CERT_FILE" ] && ([ ! -f "$PFX_FILE" ] || $FILE_OVERWRITE)) ; then
+
+		openssl pkcs12 -inkey "$KEY_FILE" -in "$CERT_FILE" -export -out "$PFX_FILE" -passin "pass:$PASSWORD" -passout "pass:$PASSWORD" &>/dev/null
+
+		if [ -f "$PFX_FILE" ] ; then 
+
+			echo "INFO: PFX Container created <$PFX_FILE>"
+
+
+
+		else
+
+			echo "ERROR: Creating PFX Container <$PFX_FILE>"
+			exit 1
+    	
+   		fi
+
+	else
+
+		echo "ERROR: Creating PFX Container $PFX_FILE"
+		exit 1
+	fi
+
+}
+
+
+convertCertsToPkcs7 () {
+
+	if [ $# -ge 2 ] ; then
+
+		local P7B_FILE="$1"
+
+		echo -e "INFO:\t\tP7B File: <$P7B_FILE>"
+
+		if ([ -f "$P7B_FILE" ] && $FILE_BACKUP ) ; then 
+
+			doBackup "$P7B_FILE"
+	    	
+	   	fi
+
+
+		local CERT_STRING=""
+
+		for ((i = 2; i <= $#; i++ )); do
+		 
+			echo -e "INFO:\t\tCert $i: <${!i}>"
+
+			if [ ! -f "${!i}" ] ; then 
+
+				echo "ERROR: Input file not found ${!i}"
+				exit 1 
+    	
+			else 
+
+				CERT_STRING+=" -certfile ${!i}"
+   			
+   			fi
+
+		done
+
+
+	   	if ([ ! -f "$P7B_FILE" ] || $FILE_OVERWRITE) ; then
+
+	   		local COMMAND="openssl crl2pkcs7 -nocrl $CERT_STRING -out $P7B_FILE"
+
+	   		eval "$COMMAND"
+
+			if [ -f "$P7B_FILE" ] ; then 
+
+				echo "INFO: P7B Container created <$P7B_FILE>"
+
+			else
+
+				echo "ERROR: Creating P7B Container <$P7B_FILE>"
+				exit 1
+	    	
+	   		fi
+
+		else
+
+			echo "ERROR: Creating P7B Container $P7B_FILE"
+			exit 1
+		fi
+    
+    else
+
+	   echo "ERROR: Provide p7b output file and at least one certificate"
+	   exit 1
+	
 	fi
 
 }
@@ -1374,6 +1506,7 @@ selfSignCsr() {
 			-batch \
 		    -in "$CA_CSR_FILE" \
 		    -out "$CA_CERT_FILE" \
+		    -notext \
 			-days "$CA_CERT_EXPIRE_DAYS" \
 			-subj "$CA_CSR_SUBJECT_LINE" \
 			-passin "pass:$PASSWORD" \
@@ -1558,9 +1691,9 @@ signCsr() {
 
 		   	openssl ca \
 		   	-batch \
-		    -out "$CSR_FILE" \
 		    -in "$CSR_FILE" \
 		    -out "$CERT_FILE" \
+		    -notext \
 		    -passin "pass:$PASSWORD" \
 		    -subj "$SUBJECT" \
 		    -extensions "$CA_EXT" \
@@ -1828,6 +1961,7 @@ createHost() {
 
 	local CA_SSL_CONFIG_FILE=$(getFilePath "$ROOT_FOLDER" "$CA" "$CA" "ca" "config" "sslconfig" "SSLCONFIG") 
 	local CA_DATABASE_FILE=$(getFilePath "$ROOT_FOLDER" "$CA" "$CA" "ca" "database" "database" "DB") 
+	local CA_CERT_FILE_PEM=$(getFilePath "$ROOT_FOLDER" "$CA" "$CA" "ca" "public" "cert" "PEM")
 
 	local HOST_PRIVATE_KEY_FILE_PEM=$(getFilePath "$ROOT_FOLDER" "$CA" "$P_SUBJECT" "hosts" "private" "key" "PEM") 
 	local HOST_PRIVATE_KEY_FILE_DER=$(getFilePath "$ROOT_FOLDER" "$CA" "$P_SUBJECT" "hosts" "private" "key" "DER") 
@@ -1841,6 +1975,10 @@ createHost() {
 	local HOST_CERT_FILE_DER=$(getFilePath "$ROOT_FOLDER" "$CA" "$P_SUBJECT" "hosts" "public" "cert" "DER")
 
 	local HOST_COMBINED_KEY_CERT_FILE=$(getFilePath "$ROOT_FOLDER" "$CA" "$P_SUBJECT" "hosts" "private" "keycert" "PEM")
+	local HOST_COMBINED_CERT_KEY_FILE=$(getFilePath "$ROOT_FOLDER" "$CA" "$P_SUBJECT" "hosts" "private" "certkey" "PEM")
+	local HOST_PFX_FILE=$(getFilePath "$ROOT_FOLDER" "$CA" "$P_SUBJECT" "hosts" "private" "pfx" "PFX")
+
+	local HOST_P7B_FILE=$(getFilePath "$ROOT_FOLDER" "$CA" "$P_SUBJECT" "hosts" "public" "p7b" "P7B")
 
 	##### FLOW 
 	echo -e "\nINFO: Checking CA Folders in <$CA_FOLDER>"
@@ -1879,13 +2017,24 @@ createHost() {
 	echo -e "\nINFO: Creating Host cert DER <$HOST_CERT_FILE_DER>"
 	convertCertToDer "$HOST_CERT_FILE_PEM" "$HOST_CERT_FILE_DER"
 
-	echo -e "\nINFO: Creating Host combined Private Key Cert File PEM <$HOST_CERT_FILE_DER>"
-	combineCertWithPrivateKey "$HOST_PRIVATE_KEY_FILE_PEM" "$HOST_CERT_FILE_PEM" "$HOST_COMBINED_KEY_CERT_FILE" "$PRIVATE_KEY_PASSWORD"
+	echo -e "\nINFO: Creating Host combined Private Key Cert File PEM <$HOST_COMBINED_KEY_CERT_FILE>"
+	combineCertWithPrivateKey "keyfirst" "$HOST_PRIVATE_KEY_FILE_PEM" "$HOST_CERT_FILE_PEM" "$HOST_COMBINED_KEY_CERT_FILE" "$PRIVATE_KEY_PASSWORD"
 
-	displayResult "$HOST_PRIVATE_KEY_FILE_PEM" "$HOST_PUBLIC_KEY_FILE_PEM" "$HOST_KEY_CSR_FILE" "$HOST_CERT_FILE_PEM" "$PRIVATE_KEY_PASSWORD"
-	
+	echo -e "\nINFO: Creating Host combined Private Cert Key File PEM <$HOST_COMBINED_CERT_KEY_FILE>"
+	combineCertWithPrivateKey "certfirst" "$HOST_PRIVATE_KEY_FILE_PEM" "$HOST_CERT_FILE_PEM" "$HOST_COMBINED_CERT_KEY_FILE" "$PRIVATE_KEY_PASSWORD"
+
+	echo -e "\nINFO: Creating Host combined Private Cert Key File PKCS12 PFX <$HOST_PFX_FILE>"
+	convertKeyCertToPkcs12 "$HOST_PRIVATE_KEY_FILE_PEM" "$HOST_CERT_FILE_PEM" "$HOST_PFX_FILE" "$PRIVATE_KEY_PASSWORD"
+
 	ROOT_KEY_PASSWORD=""
 	SIGNING_KEY_PASSWORD=""
+
+	echo -e "\nINFO: Creating Host combined Cert File PKCS7 P7B <$HOST_P7B_FILE>"
+	convertCertsToPkcs7 "$HOST_P7B_FILE" "$CA_CERT_FILE_PEM" "$HOST_CERT_FILE_PEM"
+
+#	displayResult "$HOST_PRIVATE_KEY_FILE_PEM" "$HOST_PUBLIC_KEY_FILE_PEM" "$HOST_KEY_CSR_FILE" "$HOST_CERT_FILE_PEM" "$PRIVATE_KEY_PASSWORD"
+	
+
 
 }
 
@@ -1974,6 +2123,4 @@ else
 	echo "ERROR: Invalid arguments"
 	printCmdInfo
 
-fi 
-
-
+fi
